@@ -172,3 +172,38 @@ The test therefore moves rapidly away from obviously easy speeds and becomes inc
 - Ausgelassene Zielzeichen werden in der Fehleranalyse separat als `Zeichen → ∅` erfasst.
 - Für Quatschwörter und „Meine schwierigen Buchstaben“ kann eine feste Länge von 4 bis 20 Buchstaben gewählt werden; Standard bleibt zufällig 5–9.
 - Die höchste reguläre Geschwindigkeit ist Level 20 = 50 ms pro Zeichen. Adaptive Trainings und der 80%-Test gehen technisch nicht darunter; unterhalb davon wäre eine browserbasierte Bildanzeige auf üblichen Displays nicht mehr zuverlässig vergleichbar.
+
+
+### Quatschwortlänge
+Die Auswahl 4–20 Buchstaben ist im Startformular dauerhaft sichtbar und wird bei „Quatschwörter“ bzw. „Meine schwierigen Buchstaben“ aktiviert.
+
+
+### V14.3.4 – flackerfreie Stimulusdarstellung
+Handzeichen werden ohne Opacity-Fades direkt umgeschaltet. Dadurch ist immer nur ein Stimulus sichtbar; der Doppelbuchstaben-Versatz um 20 % bleibt erhalten.
+
+
+### V14.3.5 – sanfterer adaptiver Wiedereinstieg
+Beim erneuten Start eines adaptiven Trainings beginnt Daktilo jetzt drei Stufen leichter als der zuletzt gespeicherte Stand. Beispiel: gespeichert auf Stufe 11 → Wiedereinstieg auf Stufe 8. Der gespeicherte Fortschritt bleibt erhalten; nur der Einstieg wird bewusst erleichtert.
+
+### V14.4 – Mobile, Übungsmodus und Challenge-Trefferquote
+- „Nach dem Wort“ ist der Standard-Eingabemodus; das Eingabefeld wird nicht mehr automatisch fokussiert.
+- Doppelbuchstaben bleiben mit einem seitlichen Versatz sichtbar, werden dabei aber verkleinert, damit das Foto im Rahmen bleibt.
+- Im Training verrät eine falsche Antwort die Lösung nicht mehr automatisch. Erneute Eingabe und Wiederholung sind möglich; „Lösung anzeigen“ ist eine bewusste Aktion.
+- Neue Challenge-Bestenliste „Trefferquote“ mit Kategorie- und Geschwindigkeitsfilter. Es werden nur Kombinationen mit mindestens 20 Wörtern gewertet; Replays zählen nicht als Ersttreffer.
+
+### V14.4.1 – schnellere Stimulusdarstellung
+- Doppelbuchstaben bleiben in Originalgröße und werden wieder um 20 % nach rechts versetzt; der überstehende Teil wird am rechten Rand des Bildrahmens abgeschnitten.
+- Benötigte Handbilder werden vor jedem Wort vollständig geladen und dekodiert, damit es nicht mitten im Wort zu Lade-/Decode-Haklern kommt.
+- Geladene/dekodierte Bilder bleiben im Speicher-Cache.
+- Das allgemeine Vorladen läuft schrittweise im Leerlauf statt alle Bilder gleichzeitig zu dekodieren.
+- Der Fortschrittsbalken nutzt nur noch einen GPU-freundlichen Transform statt animierter Breitenänderungen.
+
+### V14.4.2 – responsive Handbilder
+Daktilo unterstützt jetzt automatisch drei Bildgrößen (480, 800 und 1200 px). Der Browser entscheidet nicht nach „Handy/Tablet/Laptop“, sondern nach der tatsächlich verfügbaren Darstellungsfläche und der Pixeldichte des Displays. Die Pixeldichte wird für die Stimulusbilder bewusst bei 1,5× gedeckelt, damit hochauflösende Geräte nicht unnötig große Bilder dekodieren.
+
+Die gewählte Größenklasse bleibt für die gesamte Seitensitzung stabil. Das verhindert Größenwechsel mitten in einem Training. Sind noch keine optimierten WebP-Dateien vorhanden, fällt Daktilo ohne zusätzliche Fehlanfragen auf die bisherigen Originalbilder zurück.
+
+Mit `python tools/build_responsive_images.py` lassen sich aus den Originalbildern automatisch die drei WebP-Sätze und das dazugehörige Manifest erzeugen.
+
+### V14.4.3 – Doppelbuchstaben nach links
+Bei zwei identischen aufeinanderfolgenden Buchstaben wird das zweite Handbild jetzt um 20 % nach links verschoben. Der überstehende Teil wird am linken Rand des Bildrahmens abgeschnitten.
