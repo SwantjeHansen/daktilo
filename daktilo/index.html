@@ -1,0 +1,258 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#147D64" />
+  <meta name="description" content="Daktilo – Fingeralphabet spielerisch gelernt" />
+  <title>Daktilo · Fingeralphabet-Trainer</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="app-shell">
+    <header class="topbar">
+      <div class="brand-lockup">
+        <img class="brand-logo" src="assets/daktilo-mascot.png" alt="Daktilo Logo" />
+        <div class="brand-copy">
+          <h1 class="brand-name">Daktilo</h1>
+          <p class="brand-tagline">Schnell daktyliert, schnell erkannt.</p>
+        </div>
+      </div>
+      <div class="top-actions">
+        <label class="zoom-control" for="zoomSelect">
+          <span>Anzeige</span>
+          <select id="zoomSelect" aria-label="Anzeigegröße">
+            <option value="auto">Auto</option>
+            <option value="70">70 %</option>
+            <option value="80">80 %</option>
+            <option value="90">90 %</option>
+            <option value="100">100 %</option>
+            <option value="110">110 %</option>
+            <option value="120">120 %</option>
+            <option value="130">130 %</option>
+          </select>
+        </label>
+        <button class="ghost-button" id="openStats" type="button">Statistik</button>
+        <button class="ghost-button" id="openLeaderboard" type="button">Bestenlisten</button>
+        <button class="ghost-button hidden" id="logoutButton" type="button">Abmelden</button>
+      </div>
+    </header>
+
+    <section class="setup-card" id="setupCard">
+      <div class="setup-visual" aria-hidden="true">
+        <img src="assets/daktilo-mascot.png" alt="" class="setup-mascot-large" />
+      </div>
+
+      <form id="setupForm" class="setup-form">
+        <div class="form-intro">
+          <h2>Training starten</h2>
+          <div class="explain-list">
+            <div class="explain-item"><strong>Training</strong><span>Du spielst so lange du willst. Wiederholen ist erlaubt. Deine persönliche Statistik wird gespeichert.</span></div>
+            <div class="explain-item"><strong>Adaptiv</strong><span>Die Geschwindigkeit passt sich automatisch an dich an. Mehrere richtige Antworten machen es schneller, Fehler machen es wieder etwas langsamer.</span></div>
+            <div class="explain-item"><strong>Challenge</strong><span>Wähle zwischen Punkte-Challenge mit fester Geschwindigkeit und einem adaptiven 80%-Test, der dein persönliches Grenztempo schätzt.</span></div>
+            <div class="explain-item"><strong>Meine schwierigen Buchstaben</strong><span>Hier bekommst du Quatschwörter mit den Buchstaben und Kombinationen, die dir bisher besonders schwerfallen.</span></div>
+          </div>
+        </div>
+
+        <label>
+          Benutzername
+          <input id="playerName" maxlength="24" autocomplete="username" placeholder="z. B. Anna" required />
+        </label>
+
+        <label>
+          Passwort
+          <input id="playerPassword" type="password" minlength="8" maxlength="72" autocomplete="current-password" placeholder="Mindestens 8 Zeichen" required />
+        </label>
+        <p class="cloud-status" id="cloudStatus">Verbindung wird geprüft …</p>
+        <p class="auth-note" id="authNote">Beim ersten Start wird der Benutzername registriert. Danach kannst du dich auf anderen Geräten mit demselben Namen und Passwort anmelden. Eine E-Mail-Adresse ist nicht nötig. Passwort bitte gut merken – eine Wiederherstellung ist in dieser Beta noch nicht eingerichtet.</p>
+        <p class="auth-error hidden" id="authError" role="alert"></p>
+
+        <div class="segmented" role="group" aria-label="Spielmodus">
+          <input type="radio" name="mode" id="modeTraining" value="training" checked />
+          <label for="modeTraining">Training</label>
+          <input type="radio" name="mode" id="modeChallenge" value="challenge" />
+          <label for="modeChallenge">Challenge</label>
+        </div>
+
+        <label id="challengeTypeWrap" class="hidden">
+          Challenge-Art
+          <select id="challengeTypeSelect">
+            <option value="points">Punkte-Challenge</option>
+            <option value="threshold">Adaptiver 80%-Test</option>
+          </select>
+        </label>
+
+        <div class="test-explainer hidden" id="thresholdExplainer">
+          <strong>Adaptiver 80%-Test</strong>
+          <span>Keine Wiederholung. Der Test macht am Anfang große Temposprünge und wird nach jedem Richtungswechsel feiner. Nach drei richtigen Wörtern wird es schneller, nach einem Fehler langsamer. So nähert er sich zügig dem Tempo, bei dem du ungefähr 80 % korrekt erkennst.</span>
+        </div>
+
+        <label>
+          Wortkategorie
+          <select id="categorySelect">
+            <option value="mixed">Alle Kategorien · gemischt</option>
+            <option value="easy">Einfache Wörter</option>
+            <option value="hard">Schwierige Wörter</option>
+            <option value="technical">Fachwörter</option>
+            <option value="english">Englische Wörter</option>
+            <option value="names">Namen</option>
+            <option value="nonsense">Quatschwörter</option>
+            <option value="sentences">Sätze</option>
+            <option value="weak">Meine schwierigen Buchstaben</option>
+          </select>
+        </label>
+
+        <label id="subcategoryWrap">
+          Unterkategorie
+          <select id="subcategorySelect"></select>
+        </label>
+
+        <label id="speedWrap">
+          Geschwindigkeit
+          <select id="speedSelect"></select>
+        </label>
+
+        <label id="inputModeWrap">
+          Eingabemodus
+          <select id="inputModeSelect">
+            <option value="live">Live tippen · während der Anzeige</option>
+            <option value="memory">Memory · erst nach der Anzeige</option>
+          </select>
+        </label>
+
+        <button class="primary-button" type="submit">Los geht’s</button>
+      </form>
+    </section>
+
+    <section class="game-card hidden" id="gameCard" aria-live="polite">
+      <div class="stats-row">
+        <div><span>Spieler</span><strong id="statPlayer">—</strong></div>
+        <div><span id="scoreLabel">XP</span><strong id="statScore">0</strong></div>
+        <div><span>Streak</span><strong id="statStreak">0</strong></div>
+        <div><span>Wörter</span><strong id="statWords">0</strong></div>
+        <div><span>Tempo</span><strong id="statSpeed">—</strong></div>
+        <div><span>Genauigkeit</span><strong id="statAccuracy">—</strong></div>
+      </div>
+
+      <div class="context-row">
+        <span class="pill" id="modePill">Training</span>
+        <span class="pill" id="categoryPill">Einfach</span>
+        <span class="pill subtle" id="adaptivePill"></span>
+      </div>
+
+      <div class="photo-stage" id="photoStage">
+        <div class="progress-track" aria-hidden="true"><div class="progress-bar" id="progressBar"></div></div>
+        <div class="photo-frame" id="photoFrame">
+          <img id="fingerPhoto" alt="Fingeralphabet-Zeichen" />
+          <div class="photo-placeholder" id="photoPlaceholder" aria-hidden="true">
+            <span id="placeholderLetter">A</span>
+            <small>Foto fehlt</small>
+          </div>
+          <div class="word-gap hidden" id="wordGap">Wortabstand</div>
+        </div>
+        <p class="sequence-status" id="sequenceStatus">Bereit …</p>
+      </div>
+
+      <form class="answer-form" id="answerForm">
+        <label for="answerInput">Was wurde buchstabiert?</label>
+        <div class="answer-row">
+          <input id="answerInput" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="Antwort eingeben" disabled />
+          <button class="primary-button" id="submitAnswer" type="submit" disabled>Prüfen</button>
+        </div>
+      </form>
+
+      <div class="game-actions">
+        <button class="secondary-button" id="replayButton" type="button" disabled>↻ Wiederholen <span id="replayCount">0</span></button>
+        <button class="text-button" id="skipButton" type="button">Überspringen</button>
+        <button class="text-button" id="stopButton" type="button">Session beenden</button>
+      </div>
+      <p class="keyboard-hint">Enter = prüfen · Leertaste bei leerem Eingabefeld = wiederholen</p>
+      <div class="feedback hidden" id="feedback"></div>
+    </section>
+
+    <section class="results-card hidden" id="resultsCard">
+      <p class="eyebrow">Session beendet</p>
+      <h2 id="resultsHeadline">Gute Einheit.</h2>
+      <div class="results-grid">
+        <div><span id="resultScoreLabel">XP</span><strong id="resultScore">0</strong></div>
+        <div><span>Genauigkeit</span><strong id="resultAccuracy">—</strong></div>
+        <div><span>Wörter</span><strong id="resultWords">0</strong></div>
+        <div><span>Replays</span><strong id="resultReplays">0</strong></div>
+        <div><span>Ø Antwortzeit</span><strong id="resultTime">0,0 s</strong></div>
+        <div><span>Bestes Tempo</span><strong id="resultSpeed">—</strong></div>
+      </div>
+      <div class="results-actions">
+        <button class="primary-button" id="playAgain" type="button">Weiter trainieren</button>
+        <button class="secondary-button" id="resultsLeaderboard" type="button">Bestenlisten</button>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <button class="footer-link" id="openImprint" type="button">Impressum</button>
+    <button class="footer-link" id="openPrivacy" type="button">Datenschutz</button>
+  </footer>
+
+  <dialog id="leaderboardDialog">
+    <div class="dialog-header"><div><p class="eyebrow">Gemeinsam online</p><h2>Bestenlisten</h2></div><button class="icon-button" data-close="leaderboardDialog" type="button" aria-label="Schließen">×</button></div>
+    <div class="tabs" id="leaderboardTabs"><button data-board="total" class="active" type="button">Gesamt</button><button data-board="training" type="button">Trainingsfleiß</button><button data-board="week" type="button">Diese Woche</button><button data-board="best" type="button">Bestleistung</button><button data-board="threshold" type="button">80%-Tempo</button></div>
+    <div id="leaderboardList" class="leaderboard-list"></div>
+    <div class="dialog-footer"><p>Online-Ergebnisse werden über dein Daktilo-Konto synchronisiert. Auf diesem Gerät bleibt zusätzlich ein lokaler Cache.</p><button class="text-button danger" id="clearData" type="button">Lokalen Cache löschen</button></div>
+  </dialog>
+
+  <dialog id="statsDialog">
+    <div class="dialog-header"><div><p class="eyebrow">Lernfortschritt</p><h2>Statistik</h2></div><button class="icon-button" data-close="statsDialog" type="button" aria-label="Schließen">×</button></div>
+    <div class="stats-dialog-body">
+      <label>Spieler<select id="statsPlayerSelect"></select></label>
+      <div class="profile-grid" id="profileSummary"></div>
+      <div class="stats-section"><h3>Schwierigste Wörter</h3><p class="stats-help">Aus deinen bisherigen Antworten – gewichtet nach Fehlern, Replays und benötigter Zeit.</p><div id="hardestWordsList" class="word-difficulty-list"></div></div>
+      <div class="stats-section"><h3>Typische Buchstabenverwechslungen</h3><div id="confusionList" class="confusion-list"></div></div>
+      <div class="stats-section"><h3>Schwierige Buchstaben & Kombinationen</h3><div id="weakLettersList" class="weak-list"></div></div>
+      <div class="stats-section"><h3>Adaptive 80%-Tests</h3><div id="thresholdHistory" class="threshold-history"></div></div>
+      <div class="stats-section"><h3>Letzte 6 Wochen</h3><div id="weeklyHistory" class="weekly-history"></div></div>
+    </div>
+  </dialog>
+
+
+  <dialog id="imprintDialog" class="imprint-dialog">
+    <div class="dialog-header">
+      <div><p class="eyebrow">Anbieterkennzeichnung</p><h2>Impressum</h2></div>
+      <button class="icon-button" data-close="imprintDialog" type="button" aria-label="Schließen">×</button>
+    </div>
+    <div class="imprint-body">
+      <p><strong>Verantwortlich</strong></p>
+      <p>Swantje Hansen</p>
+      <p>E-Mail: <a href="mailto:swantje.hansen@posteo.de">swantje.hansen@posteo.de</a></p>
+    </div>
+  </dialog>
+
+  <dialog id="privacyDialog" class="privacy-dialog">
+    <div class="dialog-header">
+      <div><p class="eyebrow">Datenschutz</p><h2>Datenschutzhinweise</h2></div>
+      <button class="icon-button" data-close="privacyDialog" type="button" aria-label="Schließen">×</button>
+    </div>
+    <div class="privacy-body">
+      <h3>Verarbeitete Daten</h3>
+      <p>Daktilo verarbeitet einen frei gewählten Benutzernamen, Anmeldeinformationen über Supabase Auth sowie Trainingsdaten wie Punkte, Wortanzahl, Fehler, Replays, Lernniveau und Ergebnisse des adaptiven 80%-Tests. Für das Daktilo-Konto wird keine persönliche E-Mail-Adresse abgefragt. Benutzername und zusammengefasste Leistungswerte können in den öffentlichen Bestenlisten erscheinen; detaillierte Fehler- und Wortstatistiken sind nur für das jeweilige Konto vorgesehen.</p>
+      <h3>Zweck</h3>
+      <p>Die Daten werden genutzt, um persönliche Lernstände geräteübergreifend zu speichern und gemeinsame Bestenlisten bereitzustellen.</p>
+      <h3>Dienstleister</h3>
+      <p>Für Anmeldung und Datenspeicherung wird Supabase eingesetzt. Die statische Website kann über GitHub Pages bereitgestellt werden. Bei der Nutzung können die jeweiligen Anbieter technische Verbindungsdaten wie IP-Adressen verarbeiten.</p>
+      <h3>Kontakt</h3>
+      <p>Swantje Hansen · <a href="mailto:swantje.hansen@posteo.de">swantje.hansen@posteo.de</a></p>
+    </div>
+  </dialog>
+
+  <script src="data/easy.js"></script>
+  <script src="data/hard.js"></script>
+  <script src="data/technical.js"></script>
+  <script src="data/english.js"></script>
+  <script src="data/names.js"></script>
+  <script src="data/sentences.js"></script>
+  <script src="data/bank.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="config.js"></script>
+  <script src="cloud.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
