@@ -3,14 +3,14 @@ const WORD_BANK = window.DAKTILO_WORDS || {};
 function categoryObject(key) { return WORD_BANK[key] || { label: key, subcategories: {} }; }
 function allItemsForCategory(key) {
   const obj = categoryObject(key);
-  return Object.values(obj.subcategories || {}).flatMap((section) => section.items || []);
+  return [...new Set(Object.values(obj.subcategories || {}).flatMap((section) => section.items || []))];
 }
 function isEasyLength(item) {
   return String(item).replace(/\s+/g, "").length <= 8;
 }
 function itemsForCategory(key, subcategory = "all") {
   const obj = categoryObject(key);
-  const items = subcategory === "all" ? allItemsForCategory(key) : (obj.subcategories?.[subcategory]?.items || []);
+  const items = subcategory === "all" ? allItemsForCategory(key) : [...new Set(obj.subcategories?.[subcategory]?.items || [])];
   // "Einfach" means genuinely short here. Long compounds belong in the harder categories.
   return key === "easy" ? items.filter(isEasyLength) : items;
 }
@@ -21,6 +21,8 @@ const TECHNICAL_WORDS = allItemsForCategory("technical");
 const ENGLISH_WORDS = allItemsForCategory("english");
 const NAMES = allItemsForCategory("names");
 const SENTENCES = allItemsForCategory("sentences");
+
+const MIN_SIGN_MS = 50;
 
 const SPEED_LEVELS = [
   { level: 1, ms: 2000 }, { level: 2, ms: 1600 }, { level: 3, ms: 1300 }, { level: 4, ms: 1000 },
@@ -44,12 +46,14 @@ const CATEGORY_INFO = {
 
 const STORAGE_KEY = "fingerTrainerV2";
 const PASSWORD_ITERATIONS = 150000;
-const BETWEEN_SIGNS_MS = 45;
-const WORD_GAP_MS = 420;
+const BETWEEN_SIGNS_MS = 8;
+const WORD_GAP_MS = 260;
 const IMAGE_VARIANTS = 5;
-const IMAGE_EXTENSIONS = ["png", "webp"]
+const IMAGE_EXTENSIONS = ["png", "webp"];
+const resolvedImageUrls = new Map();
+const failedImageSigns = new Set();
 const TRANSITION_MODE = "soft"; // "soft" or "blank"
-const NONSENSE_LENGTHS = [5, 6, 7, 8, 9];
+const NONSENSE_LENGTHS = [5, 6, 7, 8, 9]; // default random range; fixed 4–20 is selectable
 const DISPLAY_SIGNS = [..."ABCDEFGHIJKLMNOPQRSTUVWXYZ", "Ä", "Ö", "Ü", "ß", "SCH"];
 const LETTERS = [...DISPLAY_SIGNS];
 const VOWELS = [..."AEIOUÄÖÜ"];
@@ -93,6 +97,8 @@ const state = {
   sessionStartedAt: null,
   active: false,
   lastOutcomeAt: 0,
+  nonsenseLength: "random",
+  sessionSeenItems: new Set(),
 };
 
 const $ = (id) => document.getElementById(id);
@@ -208,9 +214,8 @@ function tokenizeSigns(value) { return tokenizeSequence(value).filter((token) =>
 function accuracy(correct, total) { return total ? Math.round((correct / total) * 100) : 0; }
 function isThresholdTest() { return state.mode === "challenge" && state.challengeType === "threshold"; }
 function speedMsForLevel(level) {
-  if (level <= SPEED_LEVELS.length) return SPEED_LEVELS[Math.max(1, level) - 1].ms;
-  // Adaptive training has no game-defined maximum. Beyond L20, each level is 12% faster.
-  return Math.max(1, Math.round(SPEED_LEVELS[SPEED_LEVELS.length - 1].ms * Math.pow(0.88, level - SPEED_LEVELS.length)));
+  const safeLevel = clamp(Math.round(Number(level) || 1), 1, SPEED_LEVELS.length);
+  return SPEED_LEVELS[safeLevel - 1].ms;
 }
 function nearestLevelForMs(ms) {
   let best = 1, bestDiff = Infinity;
@@ -224,7 +229,7 @@ function currentLevel() {
   if (isThresholdTest()) return nearestLevelForMs(state.thresholdSpeedMs);
   return state.speedMode === "adaptive" ? state.adaptiveLevel : state.fixedLevel;
 }
-function currentSpeed() { return isThresholdTest() ? Math.max(1, Math.round(state.thresholdSpeedMs)) : speedMsForLevel(currentLevel()); }
+function currentSpeed() { return isThresholdTest() ? Math.max(MIN_SIGN_MS, Math.round(state.thresholdSpeedMs)) : speedMsForLevel(currentLevel()); }
 function speedLabel(level = currentLevel()) {
   if (isThresholdTest()) return `Test · ${currentSpeed()} ms`;
   return `L${level} · ${speedMsForLevel(level)} ms`;
@@ -420,6 +425,10 @@ function updateProblemStats(player, expected, guessed) {
       const key = `${op.expected}→${op.guessed}`;
       player.confusions[key] = (player.confusions[key] || 0) + 1;
     }
+    if (op.type === "del" && op.expected) {
+      const key = `${op.expected}→∅`;
+      player.confusions[key] = (player.confusions[key] || 0) + 1;
+    }
   });
   for (let k = 0; k < target.length - 1; k += 1) {
     const combo = [target[k], target[k + 1]].join("·");
@@ -443,8 +452,15 @@ function weakTargetsForPlayer(name, limit = 6) {
   return [...letters, ...combos].sort((a, b) => b.score - a.score).slice(0, limit).map((x) => x.symbol);
 }
 
+function selectedNonsenseLength() {
+  const raw = state.nonsenseLength;
+  if (raw === "random") return randomItem(NONSENSE_LENGTHS);
+  const fixed = Number(raw);
+  return Number.isInteger(fixed) ? clamp(fixed, 4, 20) : randomItem(NONSENSE_LENGTHS);
+}
+
 function makeNonsense({ weak = false } = {}) {
-  const length = randomItem(NONSENSE_LENGTHS);
+  const length = selectedNonsenseLength();
   const targets = weak ? weakTargetsForPlayer(state.player, 5) : [];
   const tokens = [];
   let useVowel = Math.random() > 0.5;
@@ -468,12 +484,52 @@ function makeNonsense({ weak = false } = {}) {
   return tokens.join("");
 }
 
+function rememberSessionItem(item) {
+  const key = normalizeAnswer(item);
+  if (key) state.sessionSeenItems.add(key);
+  return item;
+}
+
+function chooseUnseenFromPool(pool) {
+  const uniquePool = [...new Set(pool)].filter(Boolean);
+  if (!uniquePool.length) return "";
+  const unseen = uniquePool.filter((item) => !state.sessionSeenItems.has(normalizeAnswer(item)));
+  if (unseen.length) return rememberSessionItem(randomItem(unseen));
+  // Infinite training can eventually exhaust a small pool. Only then allow a new cycle.
+  uniquePool.forEach((item) => state.sessionSeenItems.delete(normalizeAnswer(item)));
+  return rememberSessionItem(randomItem(uniquePool));
+}
+
+function chooseUnseenNonsense({ weak = false } = {}) {
+  for (let tries = 0; tries < 80; tries += 1) {
+    const item = makeNonsense({ weak });
+    if (!state.sessionSeenItems.has(normalizeAnswer(item))) return rememberSessionItem(item);
+  }
+  return rememberSessionItem(makeNonsense({ weak }));
+}
+
 function nextItem() {
   let category = state.category;
   let subcategory = state.subcategory;
 
   if (category === "mixed") {
-    category = randomItem(["easy", "hard", "technical", "english", "names", "sentences", "nonsense"]);
+    const categories = ["easy", "hard", "technical", "english", "names", "sentences", "nonsense"];
+    for (let tries = 0; tries < categories.length * 2; tries += 1) {
+      const candidateCategory = randomItem(categories);
+      if (candidateCategory === "nonsense") {
+        state.currentItemCategory = candidateCategory;
+        state.currentItemSubcategory = "all";
+        return chooseUnseenNonsense();
+      }
+      const candidatePool = itemsForCategory(candidateCategory, "all");
+      const unseen = candidatePool.filter((item) => !state.sessionSeenItems.has(normalizeAnswer(item)));
+      if (unseen.length) {
+        state.currentItemCategory = candidateCategory;
+        state.currentItemSubcategory = "all";
+        return rememberSessionItem(randomItem(unseen));
+      }
+    }
+    category = "easy";
     subcategory = "all";
   }
 
@@ -482,10 +538,10 @@ function nextItem() {
 
   if (["easy", "hard", "technical", "english", "names", "sentences"].includes(category)) {
     const pool = itemsForCategory(category, subcategory);
-    return randomItem(pool.length ? pool : allItemsForCategory(category));
+    return chooseUnseenFromPool(pool.length ? pool : allItemsForCategory(category));
   }
-  if (category === "nonsense") return makeNonsense();
-  return makeNonsense({ weak: true });
+  if (category === "nonsense") return chooseUnseenNonsense();
+  return chooseUnseenNonsense({ weak: true });
 }
 
 function populateSubcategories() {
@@ -506,6 +562,15 @@ function populateSubcategories() {
 }
 
 
+function populateNonsenseLengths() {
+  const select = $("nonsenseLengthSelect");
+  if (!select) return;
+  select.innerHTML = `<option value="random">Zufällig · 5 bis 9 Buchstaben</option>` +
+    Array.from({ length: 17 }, (_, i) => i + 4).map((n) => `<option value="${n}">${n} Buchstaben</option>`).join("");
+  select.value = "random";
+}
+
+
 function populateSpeeds() {
   const select = $("speedSelect");
   select.innerHTML = `<option value="adaptive">Adaptiv</option>` + SPEED_LEVELS.map((s) =>
@@ -522,6 +587,7 @@ function updateSetupConstraints() {
   const adaptive = speedSelect.querySelector('option[value="adaptive"]');
   const weakCategory = $("categorySelect").querySelector('option[value="weak"]');
   challengeWrap?.classList.toggle("hidden", mode !== "challenge");
+  $("nonsenseLengthWrap")?.classList.toggle("hidden", !["nonsense", "weak"].includes($("categorySelect").value));
   $("thresholdExplainer")?.classList.toggle("hidden", !threshold);
   $("speedWrap")?.classList.toggle("hidden", threshold);
   adaptive.disabled = mode === "challenge";
@@ -545,7 +611,9 @@ function setControls() {
 }
 
 function transitionMs() {
-  return Math.max(12, Math.min(90, Math.round(currentSpeed() * 0.22)));
+  // At very high speeds, fading costs more than it helps and can hide frames entirely.
+  if (currentSpeed() <= 120) return 0;
+  return Math.max(8, Math.min(38, Math.round(currentSpeed() * 0.08)));
 }
 
 function hideVisual({ immediate = false } = {}) {
@@ -589,48 +657,85 @@ function imageCandidates(sign, { variants = true } = {}) {
   return [...new Set(candidates)];
 }
 
-function loadImageCandidate(letter, candidates, index = 0) {
+function preloadUrl(url) {
   return new Promise((resolve) => {
-    if (index >= candidates.length) {
-      fingerPhoto.style.display = "none";
-      placeholderLetter.textContent = letter;
-      photoPlaceholder.querySelector("small").textContent = `Foto fehlt · ${letter}`;
-      photoPlaceholder.style.display = "grid";
-      resolve(false);
-      return;
-    }
-    const onLoad = () => { cleanup(); resolve(true); };
-    const onError = () => { cleanup(); loadImageCandidate(letter, candidates, index + 1).then(resolve); };
-    const cleanup = () => {
-      fingerPhoto.removeEventListener("load", onLoad);
-      fingerPhoto.removeEventListener("error", onError);
-    };
-    fingerPhoto.addEventListener("load", onLoad, { once: true });
-    fingerPhoto.addEventListener("error", onError, { once: true });
-    fingerPhoto.src = candidates[index];
+    const probe = new Image();
+    probe.onload = () => resolve(true);
+    probe.onerror = () => resolve(false);
+    probe.src = url;
   });
+}
+
+async function resolveImageUrl(letter) {
+  if (resolvedImageUrls.has(letter)) return resolvedImageUrls.get(letter);
+  if (failedImageSigns.has(letter)) return null;
+  // Prefer the stable base file. This avoids repeated 404 attempts for optional variants
+  // and makes very short display times much more reliable.
+  const candidates = [...new Set([
+    ...imageCandidates(letter, { variants: false }),
+    ...imageCandidates(letter, { variants: true })
+  ])];
+  for (const url of candidates) {
+    if (await preloadUrl(url)) {
+      resolvedImageUrls.set(letter, url);
+      return url;
+    }
+  }
+  failedImageSigns.add(letter);
+  return null;
+}
+
+function preloadSignImages() {
+  DISPLAY_SIGNS.forEach((sign) => { resolveImageUrl(sign); });
+}
+
+function nextPaint() {
+  return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
 }
 
 async function showSign(letter, { duplicate = false } = {}) {
   const fade = transitionMs();
   fingerPhoto.style.setProperty("--sign-fade-ms", `${fade}ms`);
-  fingerPhoto.classList.remove("is-visible");
   photoPlaceholder.style.display = "none";
   wordGap.classList.add("hidden");
-  if (fingerPhoto.style.display !== "none") await sleep(fade);
 
   if (letter === " ") {
+    fingerPhoto.classList.remove("is-visible", "is-duplicate");
+    await sleep(fade);
     fingerPhoto.style.display = "none";
-    fingerPhoto.classList.remove("is-duplicate");
+    fingerPhoto.dataset.sign = "";
     return;
   }
 
-  const ok = await loadImageCandidate(letter, imageCandidates(letter));
-  if (!ok) return;
+  const url = await resolveImageUrl(letter);
+  if (!url) {
+    fingerPhoto.classList.remove("is-visible", "is-duplicate");
+    fingerPhoto.style.display = "none";
+    placeholderLetter.textContent = letter;
+    photoPlaceholder.querySelector("small").textContent = `Foto fehlt · ${letter}`;
+    photoPlaceholder.style.display = "grid";
+    return;
+  }
+
+  const sameSign = fingerPhoto.dataset.sign === letter && fingerPhoto.style.display !== "none";
+  if (!sameSign && fingerPhoto.style.display !== "none") {
+    fingerPhoto.classList.remove("is-visible");
+    await sleep(fade);
+  }
+
+  if (!sameSign) fingerPhoto.src = url;
+  fingerPhoto.dataset.sign = letter;
   fingerPhoto.style.display = "block";
   fingerPhoto.classList.toggle("is-duplicate", duplicate);
-  requestAnimationFrame(() => requestAnimationFrame(() => fingerPhoto.classList.add("is-visible")));
-  await sleep(fade);
+  if (!sameSign) {
+    fingerPhoto.classList.remove("is-visible");
+    if (fade > 0) await nextPaint();
+    fingerPhoto.classList.add("is-visible");
+    if (fade > 0) await sleep(fade);
+  } else if (fade > 0) {
+    // For doubled letters keep the hand visible; only the 20% shift animates.
+    await nextPaint();
+  }
 }
 
 async function playSequence({ replay = false } = {}) {
@@ -728,7 +833,7 @@ function updateThresholdAfterOutcome(correct) {
     if (state.thresholdCorrectRun >= 3) {
       direction = "faster";
       state.thresholdCorrectRun = 0;
-      state.thresholdSpeedMs = Math.max(1, before * factor);
+      state.thresholdSpeedMs = Math.max(MIN_SIGN_MS, before * factor);
     }
   } else {
     direction = "slower";
@@ -756,7 +861,7 @@ function adaptAfterOutcome({ correct, firstTry }) {
   } else if (firstTry) {
     state.adaptiveSuccesses += 1;
     if (state.adaptiveSuccesses >= 3) {
-      state.adaptiveLevel += 1;
+      state.adaptiveLevel = Math.min(SPEED_LEVELS.length, state.adaptiveLevel + 1);
       state.adaptiveSuccesses = 0;
     }
   } else {
@@ -962,12 +1067,13 @@ function startSession() {
   state.subcategory = state.category === "mixed" ? "all" : ($("subcategorySelect")?.value || "all");
   state.currentItemCategory = state.category === "mixed" ? "easy" : state.category;
   state.currentItemSubcategory = state.subcategory;
+  state.nonsenseLength = $("nonsenseLengthSelect")?.value || "random";
   state.inputMode = $("inputModeSelect").value;
   const speedValue = $("speedSelect").value;
   state.speedMode = isThresholdTest() ? "threshold" : (speedValue === "adaptive" ? "adaptive" : "fixed");
   state.fixedLevel = speedValue === "adaptive" ? 4 : Number(speedValue);
   const savedProfile = getDb().players[playerKey(state.player)];
-  state.adaptiveLevel = state.speedMode === "adaptive" ? Math.max(1, (Number(savedProfile?.trainingAdaptiveLevel) || 4) - 1) : 4;
+  state.adaptiveLevel = state.speedMode === "adaptive" ? Math.min(SPEED_LEVELS.length, Math.max(1, (Number(savedProfile?.trainingAdaptiveLevel) || 4) - 1)) : 4;
   state.adaptiveSuccesses = 0;
   state.thresholdCorrectRun = 0;
   state.thresholdDirection = null;
@@ -980,7 +1086,7 @@ function startSession() {
     const dbForStart = getDb();
     const existing = dbForStart.players[playerKey(state.player)];
     const previous = Number(existing?.lastThresholdMs);
-    state.thresholdSpeedMs = Number.isFinite(previous) && previous > 0 ? clamp(previous, 40, 2000) : 800;
+    state.thresholdSpeedMs = Number.isFinite(previous) && previous > 0 ? clamp(previous, MIN_SIGN_MS, 2000) : 800;
     state.inputMode = "live";
   }
   state.sessionScore = 0;
@@ -990,6 +1096,7 @@ function startSession() {
   state.replaysThisWord = 0;
   state.totalReplays = 0;
   state.answerTimes = [];
+  state.sessionSeenItems = new Set();
   state.bestLevel = currentLevel();
   state.sequenceToken += 1;
   state.sequenceRunning = false;
@@ -1129,7 +1236,8 @@ function renderConfusions(player) {
   const rows = Object.entries(player?.confusions || {}).sort((a,b) => b[1]-a[1]).slice(0,10);
   host.innerHTML = rows.length ? rows.map(([pair,count]) => {
     const [from,to] = pair.split("→");
-    return `<div class="confusion-row"><div class="confusion-pair">${escapeHtml(from || "?")} → ${escapeHtml(to || "?")}</div><div class="confusion-meta">Zielzeichen wurde als anderes Zeichen eingegeben</div><div class="confusion-count">${count}×</div></div>`;
+    const omission = to === "∅";
+    return `<div class="confusion-row"><div class="confusion-pair">${escapeHtml(from || "?")} → ${escapeHtml(to || "?")}</div><div class="confusion-meta">${omission ? "Zielzeichen wurde ausgelassen" : "Zielzeichen wurde als anderes Zeichen eingegeben"}</div><div class="confusion-count">${count}×</div></div>`;
   }).join("") : '<div class="empty-state">Noch keine stabilen Verwechslungsmuster erkannt.</div>';
 }
 
@@ -1270,10 +1378,11 @@ function resetToSetup() {
 }
 
 initZoomControl();
+populateNonsenseLengths();
 populateSpeeds();
-updateSetupConstraints();
-
 populateSubcategories();
+updateSetupConstraints();
+preloadSignImages();
 updateCloudStatus();
 
 setupForm.addEventListener("submit", async (event) => {
