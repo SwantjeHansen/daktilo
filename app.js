@@ -44,7 +44,7 @@ const CATEGORY_INFO = {
 
 const STORAGE_KEY = "fingerTrainerV2";
 const PASSWORD_ITERATIONS = 150000;
-const BETWEEN_SIGNS_MS = 60;
+const BETWEEN_SIGNS_MS = 45;
 const WORD_GAP_MS = 420;
 const IMAGE_VARIANTS = 5;
 const IMAGE_EXTENSIONS = ["png", "webp"]
@@ -109,7 +109,6 @@ const fingerPhoto = $("fingerPhoto");
 const photoPlaceholder = $("photoPlaceholder");
 const placeholderLetter = $("placeholderLetter");
 const wordGap = $("wordGap");
-const sequenceStatus = $("sequenceStatus");
 const progressBar = $("progressBar");
 const leaderboardDialog = $("leaderboardDialog");
 const statsDialog = $("statsDialog");
@@ -545,9 +544,23 @@ function setControls() {
   if (canType && !state.sequenceRunning) answerInput.focus();
 }
 
-function hideVisual() {
-  fingerPhoto.style.display = "none";
-  photoPlaceholder.style.display = "none";
+function transitionMs() {
+  return Math.max(12, Math.min(90, Math.round(currentSpeed() * 0.22)));
+}
+
+function hideVisual({ immediate = false } = {}) {
+  const fade = immediate ? 0 : transitionMs();
+  fingerPhoto.style.setProperty("--sign-fade-ms", `${fade}ms`);
+  fingerPhoto.classList.remove("is-visible", "is-duplicate");
+  if (immediate) {
+    fingerPhoto.style.display = "none";
+    photoPlaceholder.style.display = "none";
+  } else {
+    setTimeout(() => {
+      if (!fingerPhoto.classList.contains("is-visible")) fingerPhoto.style.display = "none";
+    }, fade + 10);
+    photoPlaceholder.style.display = "none";
+  }
   wordGap.classList.add("hidden");
 }
 
@@ -576,31 +589,48 @@ function imageCandidates(sign, { variants = true } = {}) {
   return [...new Set(candidates)];
 }
 
-function tryImageCandidates(letter, candidates, index = 0) {
-  if (index >= candidates.length) {
-    fingerPhoto.style.display = "none";
-    wordGap.classList.add("hidden");
-    placeholderLetter.textContent = letter;
-    photoPlaceholder.querySelector("small").textContent = `Foto fehlt · ${letter}`;
-    photoPlaceholder.style.display = "grid";
-    return;
-  }
-  fingerPhoto.onload = () => {
-    fingerPhoto.style.display = "block";
-    photoPlaceholder.style.display = "none";
-    wordGap.classList.add("hidden");
-  };
-  fingerPhoto.onerror = () => tryImageCandidates(letter, candidates, index + 1);
-  fingerPhoto.src = candidates[index];
+function loadImageCandidate(letter, candidates, index = 0) {
+  return new Promise((resolve) => {
+    if (index >= candidates.length) {
+      fingerPhoto.style.display = "none";
+      placeholderLetter.textContent = letter;
+      photoPlaceholder.querySelector("small").textContent = `Foto fehlt · ${letter}`;
+      photoPlaceholder.style.display = "grid";
+      resolve(false);
+      return;
+    }
+    const onLoad = () => { cleanup(); resolve(true); };
+    const onError = () => { cleanup(); loadImageCandidate(letter, candidates, index + 1).then(resolve); };
+    const cleanup = () => {
+      fingerPhoto.removeEventListener("load", onLoad);
+      fingerPhoto.removeEventListener("error", onError);
+    };
+    fingerPhoto.addEventListener("load", onLoad, { once: true });
+    fingerPhoto.addEventListener("error", onError, { once: true });
+    fingerPhoto.src = candidates[index];
+  });
 }
 
-function showSign(letter) {
-  hideVisual();
+async function showSign(letter, { duplicate = false } = {}) {
+  const fade = transitionMs();
+  fingerPhoto.style.setProperty("--sign-fade-ms", `${fade}ms`);
+  fingerPhoto.classList.remove("is-visible");
+  photoPlaceholder.style.display = "none";
+  wordGap.classList.add("hidden");
+  if (fingerPhoto.style.display !== "none") await sleep(fade);
+
   if (letter === " ") {
-    wordGap.classList.remove("hidden");
+    fingerPhoto.style.display = "none";
+    fingerPhoto.classList.remove("is-duplicate");
     return;
   }
-  tryImageCandidates(letter, imageCandidates(letter));
+
+  const ok = await loadImageCandidate(letter, imageCandidates(letter));
+  if (!ok) return;
+  fingerPhoto.style.display = "block";
+  fingerPhoto.classList.toggle("is-duplicate", duplicate);
+  requestAnimationFrame(() => requestAnimationFrame(() => fingerPhoto.classList.add("is-visible")));
+  await sleep(fade);
 }
 
 async function playSequence({ replay = false } = {}) {
@@ -625,10 +655,10 @@ async function playSequence({ replay = false } = {}) {
   for (let i = 0; i < chars.length; i += 1) {
     if (token !== state.sequenceToken || !state.active) return;
     const char = chars[i];
+    const duplicate = char !== " " && i > 0 && chars[i - 1] === char;
     progressBar.style.width = `${((i + 1) / chars.length) * 100}%`;
-    showSign(char);
-    sequenceStatus.textContent = char === " " ? "Wortabstand" : `Zeichen ${i + 1} von ${chars.length}`;
-    await sleep(char === " " ? WORD_GAP_MS : currentSpeed());
+    await showSign(char, { duplicate });
+    await sleep(char === " " ? WORD_GAP_MS : Math.max(1, currentSpeed() - (2 * transitionMs())));
     if (i < chars.length - 1 && TRANSITION_MODE === "blank") {
       hideVisual();
       await sleep(BETWEEN_SIGNS_MS);
@@ -640,7 +670,6 @@ async function playSequence({ replay = false } = {}) {
   }
   if (token !== state.sequenceToken || !state.active) return;
   progressBar.style.width = "100%";
-  sequenceStatus.textContent = "Deine Antwort";
   state.sequenceRunning = false;
   state.sequenceFinished = true;
   setControls();
@@ -1187,6 +1216,46 @@ function openStats() {
   statsDialog.showModal();
 }
 
+function freshPlayerProgress(name, existing = {}) {
+  const clean = canonicalPlayer(name);
+  const fresh = {
+    name: clean, challengePoints: 0, trainingWords: 0, totalWords: 0, totalCorrect: 0,
+    totalReplays: 0, trainingMs: 0, bestChallengeWord: 0, bestStreak: 0,
+    letters: {}, confusions: {}, combos: {}, thresholdTests: [], bestThresholdMs: null,
+    lastThresholdMs: null, trainingAdaptiveLevel: 4, weekKey: weekKey(), weekPoints: 0,
+    createdAt: existing.createdAt || nowIso(), lastPlayedAt: nowIso()
+  };
+  if (existing.auth) fresh.auth = existing.auth;
+  return fresh;
+}
+
+async function resetCurrentScores() {
+  const targetName = state.player || $("playerName")?.value;
+  if (!targetName) return;
+  if (!confirm("Wirklich alle Spielstände und Lernstatistiken für dieses Konto löschen? Benutzername und Passwort bleiben erhalten.")) return;
+  try {
+    if (cloudConfigured()) await window.DaktiloCloud.resetProgress();
+    const db = getDb();
+    const key = playerKey(targetName);
+    const existing = db.players[key] || {};
+    db.players[key] = freshPlayerProgress(targetName, existing);
+    db.events = db.events.filter((e) => e.playerKey !== key);
+    db.sessions = db.sessions.filter((session) => session.playerKey !== key);
+    saveDb(db);
+    state.adaptiveLevel = 4;
+    state.adaptiveSuccesses = 0;
+    state.sessionScore = 0;
+    state.streak = 0;
+    state.wordsAnswered = 0;
+    state.correct = 0;
+    state.totalReplays = 0;
+    if ($("statsDialog")?.open) renderStats(key);
+    alert("Spielstände und Lernstatistik wurden gelöscht.");
+  } catch (err) {
+    alert(err?.message || "Die Spielstände konnten nicht vollständig gelöscht werden.");
+  }
+}
+
 function resetToSetup() {
   clearTimeout(state.pendingTimer);
   state.active = false;
@@ -1290,6 +1359,7 @@ $("leaderboardTabs").addEventListener("click", (event) => {
   renderLeaderboard(button.dataset.board);
 });
 $("statsPlayerSelect").addEventListener("change", (event) => renderStats(event.target.value));
+$("resetScores")?.addEventListener("click", resetCurrentScores);
 $("clearData").addEventListener("click", () => {
   if (!confirm("Lokalen Cache auf diesem Gerät löschen? Dein Online-Konto bleibt erhalten.")) return;
   localStorage.removeItem(STORAGE_KEY);

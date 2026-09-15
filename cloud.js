@@ -237,6 +237,29 @@
     });
   }
 
+
+  async function resetProgress() {
+    if (!configured || !activeUserId) return { ok: false, reason: "not_configured" };
+    const now = new Date().toISOString();
+    const [eventsRes, stateRes, profileRes] = await Promise.all([
+      client.from("daktilo_events").delete().eq("user_id", activeUserId),
+      client.from("daktilo_private_state").upsert({
+        user_id: activeUserId,
+        state: { player: null },
+        updated_at: now
+      }, { onConflict: "user_id" }),
+      client.from("daktilo_profiles").update({
+        challenge_points: 0, training_words: 0, total_words: 0, total_correct: 0,
+        total_replays: 0, training_ms: 0, best_challenge_word: 0, best_streak: 0,
+        best_threshold_ms: null, last_threshold_ms: null, adaptive_level: 4,
+        week_key: weekKey(), week_points: 0, updated_at: now
+      }).eq("user_id", activeUserId)
+    ]);
+    const error = eventsRes.error || stateRes.error || profileRes.error;
+    if (error) throw error;
+    return { ok: true };
+  }
+
   async function logout() {
     if (client) await client.auth.signOut({ scope: "local" });
     activeUserId = null;
@@ -252,6 +275,7 @@
     syncOutcome,
     syncEventBatch,
     fetchLeaderboard,
+    resetProgress,
     logout,
     weekKey
   };

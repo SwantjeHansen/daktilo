@@ -105,11 +105,17 @@ create policy "daktilo events own update"
   using (auth.uid() = user_id)
   with check (auth.uid() = user_id);
 
+drop policy if exists "daktilo events own delete" on public.daktilo_events;
+create policy "daktilo events own delete"
+  on public.daktilo_events for delete
+  to authenticated
+  using ((select auth.uid()) = user_id);
+
 -- Least-privilege Data API grants. RLS still controls individual rows.
 grant select on public.daktilo_profiles to anon, authenticated;
 grant insert, update on public.daktilo_profiles to authenticated;
 grant select, insert, update on public.daktilo_private_state to authenticated;
-grant select, insert, update on public.daktilo_events to authenticated;
+grant select, insert, update, delete on public.daktilo_events to authenticated;
 grant usage, select on sequence public.daktilo_events_id_seq to authenticated;
 
 -- Username-only login gateway (server-side only; no Data API access for browsers).

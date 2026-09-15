@@ -148,9 +148,8 @@
             <span id="placeholderLetter">A</span>
             <small>Foto fehlt</small>
           </div>
-          <div class="word-gap hidden" id="wordGap">Wortabstand</div>
+          <div class="word-gap hidden" id="wordGap" aria-hidden="true"></div>
         </div>
-        <p class="sequence-status" id="sequenceStatus">Bereit …</p>
       </div>
 
       <form class="answer-form" id="answerForm">
@@ -211,6 +210,7 @@
       <div class="stats-section"><h3>Adaptive 80%-Tests</h3><div id="thresholdHistory" class="threshold-history"></div></div>
       <div class="stats-section"><h3>Letzte 6 Wochen</h3><div id="weeklyHistory" class="weekly-history"></div></div>
     </div>
+    <div class="dialog-footer"><p>Löscht Punkte, Lernstatistik und Verlauf dieses Kontos. Benutzername und Passwort bleiben bestehen.</p><button class="text-button danger" id="resetScores" type="button">Spielstände löschen</button></div>
   </dialog>
 
 
