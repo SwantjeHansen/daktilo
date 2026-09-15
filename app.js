@@ -565,28 +565,9 @@ function populateSubcategories() {
 function populateNonsenseLengths() {
   const select = $("nonsenseLengthSelect");
   if (!select) return;
-  const previous = select.value || "random";
   select.innerHTML = `<option value="random">Zufällig · 5 bis 9 Buchstaben</option>` +
     Array.from({ length: 17 }, (_, i) => i + 4).map((n) => `<option value="${n}">${n} Buchstaben</option>`).join("");
-  select.value = [...select.options].some((option) => option.value === previous) ? previous : "random";
-}
-
-function updateNonsenseLengthVisibility() {
-  const wrap = $("nonsenseLengthWrap");
-  const select = $("nonsenseLengthSelect");
-  const hint = $("nonsenseLengthHint");
-  const category = $("categorySelect")?.value;
-  const active = ["nonsense", "weak"].includes(category);
-  if (!wrap || !select) return;
-  // Keep this control visible at all times so it cannot disappear because of
-  // browser caching/layout state. It becomes enabled and highlighted only
-  // for categories that actually generate nonsense words.
-  wrap.classList.toggle("is-inactive", !active);
-  wrap.classList.toggle("is-active", active);
-  select.disabled = !active;
-  if (hint) hint.textContent = active
-    ? "Wähle 4 bis 20 Buchstaben oder eine zufällige Länge."
-    : "Wird aktiv, sobald du „Quatschwörter“ auswählst.";
+  select.value = "random";
 }
 
 
@@ -606,13 +587,13 @@ function updateSetupConstraints() {
   const adaptive = speedSelect.querySelector('option[value="adaptive"]');
   const weakCategory = $("categorySelect").querySelector('option[value="weak"]');
   challengeWrap?.classList.toggle("hidden", mode !== "challenge");
+  $("nonsenseLengthWrap")?.classList.toggle("hidden", !["nonsense", "weak"].includes($("categorySelect").value));
   $("thresholdExplainer")?.classList.toggle("hidden", !threshold);
   $("speedWrap")?.classList.toggle("hidden", threshold);
   adaptive.disabled = mode === "challenge";
   weakCategory.disabled = mode === "challenge";
   if (mode === "challenge" && !threshold && speedSelect.value === "adaptive") speedSelect.value = "4";
   if (mode === "challenge" && $("categorySelect").value === "weak") $("categorySelect").value = "easy";
-  updateNonsenseLengthVisibility();
   if (threshold) {
     $("inputModeSelect").value = "live";
     $("inputModeSelect").disabled = true;
@@ -1401,7 +1382,6 @@ populateNonsenseLengths();
 populateSpeeds();
 populateSubcategories();
 updateSetupConstraints();
-updateNonsenseLengthVisibility();
 preloadSignImages();
 updateCloudStatus();
 
@@ -1458,11 +1438,7 @@ setupForm.addEventListener("submit", async (event) => {
 });
 document.querySelectorAll('input[name="mode"]').forEach((el) => el.addEventListener("change", updateSetupConstraints));
 $("challengeTypeSelect")?.addEventListener("change", updateSetupConstraints);
-$("categorySelect").addEventListener("change", () => {
-  populateSubcategories();
-  updateSetupConstraints();
-  updateNonsenseLengthVisibility();
-});
+$("categorySelect").addEventListener("change", () => { populateSubcategories(); updateSetupConstraints(); });
 $("speedSelect").addEventListener("change", updateSetupConstraints);
 answerForm.addEventListener("submit", handleAnswer);
 replayButton.addEventListener("click", () => playSequence({ replay: true }));
