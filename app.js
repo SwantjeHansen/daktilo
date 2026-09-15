@@ -46,13 +46,12 @@ const CATEGORY_INFO = {
 
 const STORAGE_KEY = "fingerTrainerV2";
 const PASSWORD_ITERATIONS = 150000;
-const BETWEEN_SIGNS_MS = 8;
+const BETWEEN_SIGNS_MS = 0;
 const WORD_GAP_MS = 260;
 const IMAGE_VARIANTS = 5;
 const IMAGE_EXTENSIONS = ["png", "webp"];
 const resolvedImageUrls = new Map();
 const failedImageSigns = new Set();
-const TRANSITION_MODE = "soft"; // "soft" or "blank"
 const NONSENSE_LENGTHS = [5, 6, 7, 8, 9]; // default random range; fixed 4–20 is selectable
 const DISPLAY_SIGNS = [..."ABCDEFGHIJKLMNOPQRSTUVWXYZ", "Ä", "Ö", "Ü", "ß", "SCH"];
 const LETTERS = [...DISPLAY_SIGNS];
@@ -565,9 +564,21 @@ function populateSubcategories() {
 function populateNonsenseLengths() {
   const select = $("nonsenseLengthSelect");
   if (!select) return;
+  const previous = select.value || "random";
   select.innerHTML = `<option value="random">Zufällig · 5 bis 9 Buchstaben</option>` +
     Array.from({ length: 17 }, (_, i) => i + 4).map((n) => `<option value="${n}">${n} Buchstaben</option>`).join("");
-  select.value = "random";
+  select.value = [...select.options].some((option) => option.value === previous) ? previous : "random";
+}
+
+function updateNonsenseLengthVisibility() {
+  const wrap = $("nonsenseLengthWrap");
+  const select = $("nonsenseLengthSelect");
+  const category = $("categorySelect")?.value;
+  if (!wrap || !select) return;
+
+  const active = category === "nonsense";
+  wrap.hidden = !active;
+  select.disabled = !active;
 }
 
 
@@ -587,13 +598,13 @@ function updateSetupConstraints() {
   const adaptive = speedSelect.querySelector('option[value="adaptive"]');
   const weakCategory = $("categorySelect").querySelector('option[value="weak"]');
   challengeWrap?.classList.toggle("hidden", mode !== "challenge");
-  $("nonsenseLengthWrap")?.classList.toggle("hidden", !["nonsense", "weak"].includes($("categorySelect").value));
   $("thresholdExplainer")?.classList.toggle("hidden", !threshold);
   $("speedWrap")?.classList.toggle("hidden", threshold);
   adaptive.disabled = mode === "challenge";
   weakCategory.disabled = mode === "challenge";
   if (mode === "challenge" && !threshold && speedSelect.value === "adaptive") speedSelect.value = "4";
   if (mode === "challenge" && $("categorySelect").value === "weak") $("categorySelect").value = "easy";
+  updateNonsenseLengthVisibility();
   if (threshold) {
     $("inputModeSelect").value = "live";
     $("inputModeSelect").disabled = true;
@@ -610,25 +621,11 @@ function setControls() {
   if (canType && !state.sequenceRunning) answerInput.focus();
 }
 
-function transitionMs() {
-  // At very high speeds, fading costs more than it helps and can hide frames entirely.
-  if (currentSpeed() <= 120) return 0;
-  return Math.max(8, Math.min(38, Math.round(currentSpeed() * 0.08)));
-}
-
-function hideVisual({ immediate = false } = {}) {
-  const fade = immediate ? 0 : transitionMs();
-  fingerPhoto.style.setProperty("--sign-fade-ms", `${fade}ms`);
-  fingerPhoto.classList.remove("is-visible", "is-duplicate");
-  if (immediate) {
-    fingerPhoto.style.display = "none";
-    photoPlaceholder.style.display = "none";
-  } else {
-    setTimeout(() => {
-      if (!fingerPhoto.classList.contains("is-visible")) fingerPhoto.style.display = "none";
-    }, fade + 10);
-    photoPlaceholder.style.display = "none";
-  }
+function hideVisual() {
+  fingerPhoto.style.display = "none";
+  fingerPhoto.classList.remove("is-duplicate");
+  fingerPhoto.dataset.sign = "";
+  photoPlaceholder.style.display = "none";
   wordGap.classList.add("hidden");
 }
 
@@ -690,52 +687,43 @@ function preloadSignImages() {
 }
 
 function nextPaint() {
-  return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  return new Promise((resolve) => requestAnimationFrame(resolve));
 }
 
 async function showSign(letter, { duplicate = false } = {}) {
-  const fade = transitionMs();
-  fingerPhoto.style.setProperty("--sign-fade-ms", `${fade}ms`);
   photoPlaceholder.style.display = "none";
   wordGap.classList.add("hidden");
 
   if (letter === " ") {
-    fingerPhoto.classList.remove("is-visible", "is-duplicate");
-    await sleep(fade);
     fingerPhoto.style.display = "none";
+    fingerPhoto.classList.remove("is-duplicate");
     fingerPhoto.dataset.sign = "";
+    await nextPaint();
     return;
   }
 
   const url = await resolveImageUrl(letter);
   if (!url) {
-    fingerPhoto.classList.remove("is-visible", "is-duplicate");
     fingerPhoto.style.display = "none";
+    fingerPhoto.classList.remove("is-duplicate");
+    fingerPhoto.dataset.sign = "";
     placeholderLetter.textContent = letter;
     photoPlaceholder.querySelector("small").textContent = `Foto fehlt · ${letter}`;
     photoPlaceholder.style.display = "grid";
+    await nextPaint();
     return;
   }
 
-  const sameSign = fingerPhoto.dataset.sign === letter && fingerPhoto.style.display !== "none";
-  if (!sameSign && fingerPhoto.style.display !== "none") {
-    fingerPhoto.classList.remove("is-visible");
-    await sleep(fade);
+  // Stimuluswechsel absichtlich ohne Fade: genau ein Handbild gleichzeitig.
+  if (fingerPhoto.src !== new URL(url, document.baseURI).href) {
+    fingerPhoto.src = url;
   }
-
-  if (!sameSign) fingerPhoto.src = url;
   fingerPhoto.dataset.sign = letter;
-  fingerPhoto.style.display = "block";
   fingerPhoto.classList.toggle("is-duplicate", duplicate);
-  if (!sameSign) {
-    fingerPhoto.classList.remove("is-visible");
-    if (fade > 0) await nextPaint();
-    fingerPhoto.classList.add("is-visible");
-    if (fade > 0) await sleep(fade);
-  } else if (fade > 0) {
-    // For doubled letters keep the hand visible; only the 20% shift animates.
-    await nextPaint();
-  }
+  fingerPhoto.style.display = "block";
+
+  // Der Timer startet erst, nachdem der Browser den neuen Stimulus malen konnte.
+  await nextPaint();
 }
 
 async function playSequence({ replay = false } = {}) {
@@ -763,12 +751,12 @@ async function playSequence({ replay = false } = {}) {
     const duplicate = char !== " " && i > 0 && chars[i - 1] === char;
     progressBar.style.width = `${((i + 1) / chars.length) * 100}%`;
     await showSign(char, { duplicate });
-    await sleep(char === " " ? WORD_GAP_MS : Math.max(1, currentSpeed() - (2 * transitionMs())));
-    if (i < chars.length - 1 && TRANSITION_MODE === "blank") {
-      hideVisual();
-      await sleep(BETWEEN_SIGNS_MS);
-    } else if (i < chars.length - 1) {
-      await sleep(BETWEEN_SIGNS_MS);
+    await sleep(char === " " ? WORD_GAP_MS : currentSpeed());
+    if (i < chars.length - 1) {
+      if (BETWEEN_SIGNS_MS > 0) {
+        hideVisual();
+        await sleep(BETWEEN_SIGNS_MS);
+      }
     } else {
       hideVisual();
     }
@@ -1382,6 +1370,7 @@ populateNonsenseLengths();
 populateSpeeds();
 populateSubcategories();
 updateSetupConstraints();
+updateNonsenseLengthVisibility();
 preloadSignImages();
 updateCloudStatus();
 
@@ -1438,7 +1427,11 @@ setupForm.addEventListener("submit", async (event) => {
 });
 document.querySelectorAll('input[name="mode"]').forEach((el) => el.addEventListener("change", updateSetupConstraints));
 $("challengeTypeSelect")?.addEventListener("change", updateSetupConstraints);
-$("categorySelect").addEventListener("change", () => { populateSubcategories(); updateSetupConstraints(); });
+$("categorySelect").addEventListener("change", () => {
+  populateSubcategories();
+  updateSetupConstraints();
+  updateNonsenseLengthVisibility();
+});
 $("speedSelect").addEventListener("change", updateSetupConstraints);
 answerForm.addEventListener("submit", handleAnswer);
 replayButton.addEventListener("click", () => playSequence({ replay: true }));

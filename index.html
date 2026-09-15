@@ -107,10 +107,11 @@
           <select id="subcategorySelect"></select>
         </label>
 
-        <label id="nonsenseLengthWrap" class="hidden">
-          Anzahl Buchstaben
-          <select id="nonsenseLengthSelect"></select>
-        </label>
+        <div id="nonsenseLengthWrap" class="nonsense-length-control" hidden>
+          <label for="nonsenseLengthSelect">Quatschwortlänge · 4 bis 20 Buchstaben</label>
+          <select id="nonsenseLengthSelect" aria-describedby="nonsenseLengthHint" disabled></select>
+          <p id="nonsenseLengthHint">Wähle 4 bis 20 Buchstaben oder eine zufällige Länge.</p>
+        </div>
 
         <label id="speedWrap">
           Geschwindigkeit
