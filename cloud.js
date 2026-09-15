@@ -205,8 +205,29 @@
     }
   }
 
-  async function fetchLeaderboard(board) {
+  async function fetchLeaderboard(board, options = {}) {
     if (!configured) return null;
+
+    if (board === "accuracy") {
+      const category = String(options.category || "easy");
+      const speedMs = Math.max(1, Number(options.speedMs || 1000));
+      const minAttempts = Math.max(1, Number(options.minAttempts || 20));
+      const limit = Math.min(20, Math.max(1, Number(options.limit || 15)));
+      const { data, error } = await client.rpc("daktilo_challenge_accuracy_leaderboard", {
+        p_category: category,
+        p_speed_ms: speedMs,
+        p_min_attempts: minAttempts,
+        p_limit: limit
+      });
+      if (error) throw error;
+      return (data || []).map((row) => ({
+        name: row.username,
+        value: Number(row.accuracy_percent || 0),
+        meta: `${row.correct_count || 0}/${row.total_count || 0} Ersttreffer · mindestens ${minAttempts} Wörter`,
+        suffix: " %"
+      }));
+    }
+
     const cols = "username,challenge_points,training_words,total_words,total_correct,total_replays,training_ms,best_challenge_word,best_streak,best_threshold_ms,week_key,week_points";
     let query = client.from("daktilo_profiles").select(cols);
     let valueKey = "challenge_points";

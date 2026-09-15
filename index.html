@@ -121,9 +121,10 @@
         <label id="inputModeWrap">
           Eingabemodus
           <select id="inputModeSelect">
+            <option value="memory" selected>Nach dem Wort · erst tippen, wenn die Anzeige fertig ist</option>
             <option value="live">Live tippen · während der Anzeige</option>
-            <option value="memory">Memory · erst nach der Anzeige</option>
           </select>
+          <small class="field-hint">Für Handys empfohlen: „Nach dem Wort“. Die Bildschirmtastatur öffnet sich nicht automatisch.</small>
         </label>
 
         <button class="primary-button" type="submit">Los geht’s</button>
@@ -149,7 +150,7 @@
       <div class="photo-stage" id="photoStage">
         <div class="progress-track" aria-hidden="true"><div class="progress-bar" id="progressBar"></div></div>
         <div class="photo-frame" id="photoFrame">
-          <img id="fingerPhoto" alt="Fingeralphabet-Zeichen" />
+          <img id="fingerPhoto" alt="Fingeralphabet-Zeichen" decoding="async" />
           <div class="photo-placeholder" id="photoPlaceholder" aria-hidden="true">
             <span id="placeholderLetter">A</span>
             <small>Foto fehlt</small>
@@ -168,6 +169,7 @@
 
       <div class="game-actions">
         <button class="secondary-button" id="replayButton" type="button" disabled>↻ Wiederholen <span id="replayCount">0</span></button>
+        <button class="secondary-button hidden" id="solutionButton" type="button">Lösung anzeigen</button>
         <button class="text-button" id="skipButton" type="button">Überspringen</button>
         <button class="text-button" id="stopButton" type="button">Session beenden</button>
       </div>
@@ -200,7 +202,12 @@
 
   <dialog id="leaderboardDialog">
     <div class="dialog-header"><div><p class="eyebrow">Gemeinsam online</p><h2>Bestenlisten</h2></div><button class="icon-button" data-close="leaderboardDialog" type="button" aria-label="Schließen">×</button></div>
-    <div class="tabs" id="leaderboardTabs"><button data-board="total" class="active" type="button">Gesamt</button><button data-board="training" type="button">Trainingsfleiß</button><button data-board="week" type="button">Diese Woche</button><button data-board="best" type="button">Bestleistung</button><button data-board="threshold" type="button">80%-Tempo</button></div>
+    <div class="tabs" id="leaderboardTabs"><button data-board="total" class="active" type="button">Gesamt</button><button data-board="accuracy" type="button">Trefferquote</button><button data-board="training" type="button">Trainingsfleiß</button><button data-board="week" type="button">Diese Woche</button><button data-board="best" type="button">Bestleistung</button><button data-board="threshold" type="button">80%-Tempo</button></div>
+    <div id="accuracyLeaderboardFilters" class="leaderboard-filters hidden">
+      <label>Kategorie<select id="accuracyCategorySelect"></select></label>
+      <label>Geschwindigkeit<select id="accuracySpeedSelect"></select></label>
+      <p>Verglichen werden feste Challenge-Stufen. Mindestens 20 Wörter pro Kombination; Wiederholungen zählen nicht als Ersttreffer.</p>
+    </div>
     <div id="leaderboardList" class="leaderboard-list"></div>
     <div class="dialog-footer"><p>Online-Ergebnisse werden über dein Daktilo-Konto synchronisiert. Auf diesem Gerät bleibt zusätzlich ein lokaler Cache.</p><button class="text-button danger" id="clearData" type="button">Lokalen Cache löschen</button></div>
   </dialog>
@@ -259,6 +266,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="config.js"></script>
   <script src="cloud.js"></script>
+  <script src="images/responsive-manifest.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

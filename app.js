@@ -50,8 +50,12 @@ const BETWEEN_SIGNS_MS = 0;
 const WORD_GAP_MS = 260;
 const IMAGE_VARIANTS = 5;
 const IMAGE_EXTENSIONS = ["png", "webp"];
+const RESPONSIVE_IMAGE_SIZES = [480, 800, 1200];
+let sessionImageBucket = null;
 const resolvedImageUrls = new Map();
 const failedImageSigns = new Set();
+const decodedImageCache = new Map();
+const imageLoadPromises = new Map();
 const NONSENSE_LENGTHS = [5, 6, 7, 8, 9]; // default random range; fixed 4–20 is selectable
 const DISPLAY_SIGNS = [..."ABCDEFGHIJKLMNOPQRSTUVWXYZ", "Ä", "Ö", "Ü", "ß", "SCH"];
 const LETTERS = [...DISPLAY_SIGNS];
@@ -63,7 +67,7 @@ const state = {
   mode: "training",
   category: "easy",
   subcategory: "all",
-  inputMode: "live",
+  inputMode: "memory",
   speedMode: "adaptive",
   fixedLevel: 4,
   adaptiveLevel: 4,
@@ -82,6 +86,9 @@ const state = {
   wordsAnswered: 0,
   correct: 0,
   replaysThisWord: 0,
+  trainingHadMistake: false,
+  trainingAttempts: 0,
+  trainingAdaptivePenalized: false,
   totalReplays: 0,
   wordStartTime: 0,
   answerTimes: [],
@@ -109,6 +116,7 @@ const answerForm = $("answerForm");
 const answerInput = $("answerInput");
 const submitAnswer = $("submitAnswer");
 const replayButton = $("replayButton");
+const solutionButton = $("solutionButton");
 const feedback = $("feedback");
 const fingerPhoto = $("fingerPhoto");
 const photoPlaceholder = $("photoPlaceholder");
@@ -606,7 +614,7 @@ function updateSetupConstraints() {
   if (mode === "challenge" && $("categorySelect").value === "weak") $("categorySelect").value = "easy";
   updateNonsenseLengthVisibility();
   if (threshold) {
-    $("inputModeSelect").value = "live";
+    $("inputModeSelect").value = "memory";
     $("inputModeSelect").disabled = true;
   } else {
     $("inputModeSelect").disabled = false;
@@ -614,11 +622,16 @@ function updateSetupConstraints() {
 }
 
 function setControls() {
-  const canType = state.active && (state.inputMode === "live" || state.sequenceFinished) && !feedback.classList.contains("locked");
+  const locked = feedback.classList.contains("locked");
+  const canType = state.active && (state.inputMode === "live" || state.sequenceFinished) && !locked;
   answerInput.disabled = !canType;
-  submitAnswer.disabled = !state.active || !state.sequenceFinished || feedback.classList.contains("locked");
-  replayButton.disabled = !state.active || state.sequenceRunning || feedback.classList.contains("locked") || isThresholdTest();
-  if (canType && !state.sequenceRunning) answerInput.focus();
+  submitAnswer.disabled = !state.active || !state.sequenceFinished || locked;
+  replayButton.disabled = !state.active || state.sequenceRunning || locked || isThresholdTest();
+  if (solutionButton) {
+    const canReveal = state.active && state.mode === "training" && state.trainingHadMistake && state.sequenceFinished && !state.sequenceRunning && !locked;
+    solutionButton.classList.toggle("hidden", !canReveal);
+    solutionButton.disabled = !canReveal;
+  }
 }
 
 function hideVisual() {
@@ -627,6 +640,56 @@ function hideVisual() {
   fingerPhoto.dataset.sign = "";
   photoPlaceholder.style.display = "none";
   wordGap.classList.add("hidden");
+}
+
+function preferredImageBucket() {
+  if (sessionImageBucket) return sessionImageBucket;
+
+  const available = Array.isArray(window.DAKTILO_IMAGE_VARIANTS?.sizes)
+    ? window.DAKTILO_IMAGE_VARIANTS.sizes.filter((n) => Number.isFinite(Number(n))).map(Number).sort((a, b) => a - b)
+    : RESPONSIVE_IMAGE_SIZES;
+
+  // Estimate the real rendered stimulus size. DPR is capped deliberately:
+  // beyond ~1.5x there is little perceptual benefit here, but decoding/memory costs rise sharply.
+  const viewportWidth = Math.max(280, window.innerWidth - 32);
+  const viewportHeight = Math.max(320, window.innerHeight);
+  const cssTarget = Math.min(860, viewportWidth, viewportHeight * 0.72);
+  const effectiveDpr = Math.min(1.5, Math.max(1, Number(window.devicePixelRatio) || 1));
+  const targetPixels = cssTarget * effectiveDpr;
+
+  sessionImageBucket = available.find((size) => size >= targetPixels) || available[available.length - 1] || 800;
+  document.documentElement.dataset.imageBucket = String(sessionImageBucket);
+  return sessionImageBucket;
+}
+
+function responsiveImageCandidates(sign, { variants = true } = {}) {
+  const manifest = window.DAKTILO_IMAGE_VARIANTS;
+  if (!manifest?.enabled || !manifest.files) return [];
+
+  const bucket = preferredImageBucket();
+  const available = new Set(manifest.files[String(bucket)] || []);
+  if (!available.size) return [];
+
+  const names = imageBaseNames(sign);
+  const candidates = [];
+
+  if (variants && IMAGE_VARIANTS > 0) {
+    const firstVariant = 1 + Math.floor(Math.random() * IMAGE_VARIANTS);
+    for (let offset = 0; offset < IMAGE_VARIANTS; offset += 1) {
+      const variant = 1 + ((firstVariant - 1 + offset) % IMAGE_VARIANTS);
+      const suffix = `_${String(variant).padStart(2, "0")}`;
+      for (const name of names) {
+        const stem = `${name}${suffix}`;
+        if (available.has(stem)) candidates.push(`images/${bucket}/${encodeURIComponent(stem)}.webp`);
+      }
+    }
+  }
+
+  for (const name of names) {
+    if (available.has(name)) candidates.push(`images/${bucket}/${encodeURIComponent(name)}.webp`);
+  }
+
+  return [...new Set(candidates)];
 }
 
 function imageBaseNames(sign) {
@@ -655,23 +718,47 @@ function imageCandidates(sign, { variants = true } = {}) {
 }
 
 function preloadUrl(url) {
-  return new Promise((resolve) => {
+  if (decodedImageCache.has(url)) return Promise.resolve(true);
+  if (imageLoadPromises.has(url)) return imageLoadPromises.get(url);
+
+  const promise = new Promise((resolve) => {
     const probe = new Image();
-    probe.onload = () => resolve(true);
+    probe.decoding = "async";
+
+    probe.onload = async () => {
+      try {
+        if (typeof probe.decode === "function") await probe.decode();
+      } catch {
+        // onload already proves the image is usable; decode() may reject on some browsers.
+      }
+      decodedImageCache.set(url, probe);
+      resolve(true);
+    };
+
     probe.onerror = () => resolve(false);
     probe.src = url;
-  });
+  }).finally(() => imageLoadPromises.delete(url));
+
+  imageLoadPromises.set(url, promise);
+  return promise;
 }
 
 async function resolveImageUrl(letter) {
   if (resolvedImageUrls.has(letter)) return resolvedImageUrls.get(letter);
   if (failedImageSigns.has(letter)) return null;
-  // Prefer the stable base file. This avoids repeated 404 attempts for optional variants
-  // and makes very short display times much more reliable.
-  const candidates = [...new Set([
+
+  // If optimized variants exist, use exactly one size class for the whole page session.
+  // Otherwise fall back to the original PNG/WebP files with no extra 404 probes.
+  const responsive = [
+    ...responsiveImageCandidates(letter, { variants: false }),
+    ...responsiveImageCandidates(letter, { variants: true })
+  ];
+  const originals = [
     ...imageCandidates(letter, { variants: false }),
     ...imageCandidates(letter, { variants: true })
-  ])];
+  ];
+  const candidates = [...new Set([...responsive, ...originals])];
+
   for (const url of candidates) {
     if (await preloadUrl(url)) {
       resolvedImageUrls.set(letter, url);
@@ -682,8 +769,32 @@ async function resolveImageUrl(letter) {
   return null;
 }
 
+function prepareSequenceImages(chars) {
+  const signs = [...new Set(chars.filter((sign) => sign !== " "))];
+  return Promise.all(signs.map((sign) => resolveImageUrl(sign)));
+}
+
 function preloadSignImages() {
-  DISPLAY_SIGNS.forEach((sign) => { resolveImageUrl(sign); });
+  // Do not start 30+ large photo decodes at once. Warm the cache gradually
+  // while the browser is idle so active training keeps priority.
+  let index = 0;
+  const warmNext = () => {
+    if (index >= DISPLAY_SIGNS.length) return;
+    const sign = DISPLAY_SIGNS[index++];
+    resolveImageUrl(sign).finally(() => {
+      if ("requestIdleCallback" in window) {
+        window.requestIdleCallback(warmNext, { timeout: 250 });
+      } else {
+        setTimeout(warmNext, 40);
+      }
+    });
+  };
+
+  if ("requestIdleCallback" in window) {
+    window.requestIdleCallback(warmNext, { timeout: 250 });
+  } else {
+    setTimeout(warmNext, 40);
+  }
 }
 
 function nextPaint() {
@@ -745,11 +856,17 @@ async function playSequence({ replay = false } = {}) {
   updateStats();
   setControls();
   const chars = tokenizeSequence(state.currentItem);
+
+  // Resolve and decode exactly the signs needed for this word before playback.
+  // A short wait before the word is preferable to a hitch in the middle of it.
+  await prepareSequenceImages(chars);
+  if (token !== state.sequenceToken || !state.active) return;
+
   for (let i = 0; i < chars.length; i += 1) {
     if (token !== state.sequenceToken || !state.active) return;
     const char = chars[i];
     const duplicate = char !== " " && i > 0 && chars[i - 1] === char;
-    progressBar.style.width = `${((i + 1) / chars.length) * 100}%`;
+    progressBar.style.transform = `scaleX(${(i + 1) / chars.length})`;
     await showSign(char, { duplicate });
     await sleep(char === " " ? WORD_GAP_MS : currentSpeed());
     if (i < chars.length - 1) {
@@ -762,11 +879,10 @@ async function playSequence({ replay = false } = {}) {
     }
   }
   if (token !== state.sequenceToken || !state.active) return;
-  progressBar.style.width = "100%";
+  progressBar.style.transform = "scaleX(1)";
   state.sequenceRunning = false;
   state.sequenceFinished = true;
   setControls();
-  answerInput.focus();
 }
 
 function categoryMultiplier() { return CATEGORY_INFO[state.currentItemCategory || state.category]?.multiplier || 1; }
@@ -861,10 +977,10 @@ function adaptAfterOutcome({ correct, firstTry }) {
   return null;
 }
 
-function recordOutcome({ guess, correct, points, elapsed, skipped = false, speedMs = null }) {
+function recordOutcome({ guess, correct, points, elapsed, skipped = false, speedMs = null, analyzeProblems = true, attempts = 1, hadMistake = false, firstTryCorrect = null, solvedBySolution = false }) {
   const db = getDb();
   const player = ensurePlayer(db, state.player);
-  updateProblemStats(player, state.currentItem, guess || "");
+  if (analyzeProblems) updateProblemStats(player, state.currentItem, guess || "");
   player.totalWords += 1;
   player.totalCorrect += correct ? 1 : 0;
   player.totalReplays += state.replaysThisWord;
@@ -884,11 +1000,20 @@ function recordOutcome({ guess, correct, points, elapsed, skipped = false, speed
     clientId: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
     playerKey: playerKey(state.player), player: state.player, at: nowIso(), date: localDateKey(), week: weekKey(), mode: state.mode,
     category: state.category, itemCategory: state.currentItemCategory, subcategory: state.currentItemSubcategory, speedMode: state.speedMode, challengeType: state.challengeType, level: currentLevel(), speedMs: speedMs ?? currentSpeed(), item: state.currentItem, correct, skipped,
-    replays: state.replaysThisWord, points, elapsed: Number(elapsed.toFixed(2))
+    replays: state.replaysThisWord, attempts: Math.max(1, Number(attempts) || 1), hadMistake: Boolean(hadMistake), firstTryCorrect: firstTryCorrect == null ? Boolean(correct && state.replaysThisWord === 0) : Boolean(firstTryCorrect), solvedBySolution: Boolean(solvedBySolution),
+    points, elapsed: Number(elapsed.toFixed(2))
   };
   db.events.push(event);
   saveDb(db);
   queueCloud(() => window.DaktiloCloud.syncOutcome(player, event));
+}
+
+function recordPracticeAttempt(guess) {
+  const db = getDb();
+  const player = ensurePlayer(db, state.player);
+  updateProblemStats(player, state.currentItem, guess || "");
+  saveDb(db);
+  queueCloud(() => window.DaktiloCloud.syncPlayer(player));
 }
 
 function updateStats() {
@@ -944,9 +1069,12 @@ function prepareNextItem() {
   if (!state.active) return;
   state.currentItem = nextItem();
   state.replaysThisWord = 0;
+  state.trainingHadMistake = false;
+  state.trainingAttempts = 0;
+  state.trainingAdaptivePenalized = false;
   state.sequenceFinished = false;
   answerInput.value = "";
-  progressBar.style.width = "0%";
+  progressBar.style.transform = "scaleX(0)";
   feedback.className = "feedback hidden";
   feedback.innerHTML = "";
   hideVisual();
@@ -963,15 +1091,14 @@ function handleAnswer(event) {
   const expected = normalizeAnswer(state.currentItem);
   const elapsed = (performance.now() - state.wordStartTime) / 1000;
   const correct = guess === expected;
-  const firstTry = state.replaysThisWord === 0;
   const trialSpeed = currentSpeed();
-  state.wordsAnswered += 1;
-  state.answerTimes.push(elapsed);
 
   if (isThresholdTest()) {
+    state.wordsAnswered += 1;
+    state.answerTimes.push(elapsed);
     if (correct) { state.streak += 1; state.correct += 1; } else { state.streak = 0; }
     const testChange = updateThresholdAfterOutcome(correct);
-    recordOutcome({ guess, correct, points: 0, elapsed, speedMs: trialSpeed });
+    recordOutcome({ guess, correct, points: 0, elapsed, speedMs: trialSpeed, firstTryCorrect: correct });
     const directionText = testChange.direction === "faster" ? ` · schneller: ${testChange.after} ms` : (testChange.direction === "slower" ? ` · langsamer: ${testChange.after} ms` : "");
     if (correct) showFeedback("correct", `<strong>Richtig.</strong> ${escapeHtml(state.currentItem)}${directionText}`);
     else showFeedback("incorrect", `<strong>Nicht ganz.</strong> Richtig war <strong>${escapeHtml(state.currentItem)}</strong>${directionText}`);
@@ -987,28 +1114,98 @@ function handleAnswer(event) {
     return;
   }
 
+  // Im Training bleibt ein falsches Wort aktiv. Die Lösung wird nicht automatisch verraten.
+  if (state.mode === "training" && !correct) {
+    state.trainingAttempts += 1;
+    state.trainingHadMistake = true;
+    state.streak = 0;
+    recordPracticeAttempt(guess);
+    let adaptText = "";
+    if (!state.trainingAdaptivePenalized) {
+      const adaptiveChange = adaptAfterOutcome({ correct: false, firstTry: false });
+      state.trainingAdaptivePenalized = true;
+      adaptText = adaptiveChange ? ` · nächstes Tempo ${adaptiveChange}: ${speedLabel()}` : "";
+    }
+    answerInput.value = "";
+    feedback.className = "feedback incorrect";
+    feedback.innerHTML = `<strong>Noch nicht.</strong> Versuch es noch einmal oder sieh dir das Wort mit „Wiederholen“ erneut an. Die Lösung erscheint nur, wenn du „Lösung anzeigen“ wählst.${adaptText}`;
+    state.bestLevel = Math.max(state.bestLevel, currentLevel());
+    state.lastOutcomeAt = Date.now();
+    updateStats();
+    setControls();
+    return;
+  }
+
+  state.wordsAnswered += 1;
+  state.answerTimes.push(elapsed);
+
   if (correct) {
-    state.streak += 1;
+    const hadMistake = state.mode === "training" && state.trainingHadMistake;
+    if (state.mode === "training") state.trainingAttempts += 1;
+    state.streak = hadMistake ? 0 : state.streak + 1;
     state.correct += 1;
-    const points = pointsForCorrect();
+
+    let points = pointsForCorrect();
+    let adaptiveChange = null;
+    if (state.mode === "training" && hadMistake) {
+      points = Math.max(25, Math.round(points * 0.5));
+    } else {
+      adaptiveChange = adaptAfterOutcome({ correct: true, firstTry: state.replaysThisWord === 0 });
+    }
     state.sessionScore += points;
-    const adaptiveChange = adaptAfterOutcome({ correct: true, firstTry });
-    recordOutcome({ guess, correct: true, points, elapsed });
+    recordOutcome({
+      guess,
+      correct: true,
+      points,
+      elapsed,
+      attempts: state.mode === "training" ? Math.max(1, state.trainingAttempts) : 1,
+      hadMistake,
+      firstTryCorrect: !hadMistake && state.replaysThisWord === 0
+    });
     const label = state.mode === "challenge" ? "Punkte" : "XP";
     const adaptText = adaptiveChange ? ` · jetzt ${adaptiveChange}: ${speedLabel()}` : "";
-    showFeedback("correct", `<strong>Richtig.</strong> ${escapeHtml(state.currentItem)} · +${points.toLocaleString("de-DE")} ${label}${adaptText}`);
+    const prefix = hadMistake ? "<strong>Jetzt richtig.</strong>" : "<strong>Richtig.</strong>";
+    const practiceText = hadMistake ? " · der Fehlversuch bleibt in deiner Fehleranalyse gespeichert" : "";
+    showFeedback("correct", `${prefix} ${escapeHtml(state.currentItem)} · +${points.toLocaleString("de-DE")} ${label}${practiceText}${adaptText}`);
   } else {
+    // Challenge bleibt streng: ein falscher Versuch beendet dieses Wort.
     state.streak = 0;
-    const adaptiveChange = adaptAfterOutcome({ correct: false, firstTry });
-    recordOutcome({ guess, correct: false, points: 0, elapsed });
+    const adaptiveChange = adaptAfterOutcome({ correct: false, firstTry: state.replaysThisWord === 0 });
+    recordOutcome({ guess, correct: false, points: 0, elapsed, firstTryCorrect: false });
     const adaptText = adaptiveChange ? ` · jetzt ${adaptiveChange}: ${speedLabel()}` : "";
     showFeedback("incorrect", `<strong>Nicht ganz.</strong> Richtig war <strong>${escapeHtml(state.currentItem)}</strong>${adaptText}`);
   }
+
   state.bestLevel = Math.max(state.bestLevel, currentLevel());
   state.lastOutcomeAt = Date.now();
   updateStats();
   setControls();
   scheduleNext(1250);
+}
+
+function revealTrainingSolution() {
+  if (!state.active || state.mode !== "training" || !state.trainingHadMistake || state.sequenceRunning || !state.sequenceFinished || feedback.classList.contains("locked")) return;
+  clearTimeout(state.pendingTimer);
+  const elapsed = state.wordStartTime ? (performance.now() - state.wordStartTime) / 1000 : 0;
+  state.wordsAnswered += 1;
+  state.answerTimes.push(elapsed);
+  state.streak = 0;
+  recordOutcome({
+    guess: "",
+    correct: false,
+    points: 0,
+    elapsed,
+    analyzeProblems: false,
+    attempts: Math.max(1, state.trainingAttempts),
+    hadMistake: true,
+    firstTryCorrect: false,
+    solvedBySolution: true
+  });
+  showFeedback("incorrect", `<strong>Lösung:</strong> ${escapeHtml(state.currentItem)}. Nimm dir kurz Zeit zum Einprägen.`);
+  state.lastOutcomeAt = Date.now();
+  updateStats();
+  setControls();
+  scheduleNext(2200);
 }
 
 function scheduleNextThresholdFinish(delay = 1200) {
@@ -1027,12 +1224,13 @@ function skipCurrent() {
     state.wordsAnswered += 1;
     const elapsed = state.wordStartTime ? (performance.now() - state.wordStartTime) / 1000 : 0;
     const testChange = updateThresholdAfterOutcome(false);
-    recordOutcome({ guess: "", correct: false, points: 0, elapsed, skipped: true });
+    recordOutcome({ guess: "", correct: false, points: 0, elapsed, skipped: true, analyzeProblems: false, firstTryCorrect: false });
     showFeedback("incorrect", `<strong>Übersprungen.</strong> Richtig war <strong>${escapeHtml(state.currentItem)}</strong>${testChange.direction ? ` · langsamer: ${testChange.after} ms` : ""}`);
     updateStats(); setControls();
     if (testChange.finished) scheduleNextThresholdFinish(1300); else scheduleNext(950);
     return;
   }
+
   clearTimeout(state.pendingTimer);
   state.sequenceToken += 1;
   state.sequenceRunning = false;
@@ -1040,12 +1238,26 @@ function skipCurrent() {
   state.streak = 0;
   state.wordsAnswered += 1;
   const elapsed = state.wordStartTime ? (performance.now() - state.wordStartTime) / 1000 : 0;
-  adaptAfterOutcome({ correct: false, firstTry: false });
-  recordOutcome({ guess: "", correct: false, points: 0, elapsed, skipped: true });
+
+  if (state.mode === "training" && !state.trainingAdaptivePenalized) {
+    adaptAfterOutcome({ correct: false, firstTry: false });
+    state.trainingAdaptivePenalized = true;
+  }
+  recordOutcome({
+    guess: "",
+    correct: false,
+    points: 0,
+    elapsed,
+    skipped: true,
+    analyzeProblems: false,
+    attempts: Math.max(1, state.trainingAttempts),
+    hadMistake: state.trainingHadMistake,
+    firstTryCorrect: false
+  });
   showFeedback("incorrect", `<strong>Übersprungen.</strong> Richtig war <strong>${escapeHtml(state.currentItem)}</strong>.`);
   updateStats();
   setControls();
-  scheduleNext(1000);
+  scheduleNext(1200);
 }
 
 function startSession() {
@@ -1061,7 +1273,7 @@ function startSession() {
   state.speedMode = isThresholdTest() ? "threshold" : (speedValue === "adaptive" ? "adaptive" : "fixed");
   state.fixedLevel = speedValue === "adaptive" ? 4 : Number(speedValue);
   const savedProfile = getDb().players[playerKey(state.player)];
-  state.adaptiveLevel = state.speedMode === "adaptive" ? Math.min(SPEED_LEVELS.length, Math.max(1, (Number(savedProfile?.trainingAdaptiveLevel) || 4) - 1)) : 4;
+  state.adaptiveLevel = state.speedMode === "adaptive" ? Math.min(SPEED_LEVELS.length, Math.max(1, (Number(savedProfile?.trainingAdaptiveLevel) || 4) - 3)) : 4;
   state.adaptiveSuccesses = 0;
   state.thresholdCorrectRun = 0;
   state.thresholdDirection = null;
@@ -1082,6 +1294,9 @@ function startSession() {
   state.wordsAnswered = 0;
   state.correct = 0;
   state.replaysThisWord = 0;
+  state.trainingHadMistake = false;
+  state.trainingAttempts = 0;
+  state.trainingAdaptivePenalized = false;
   state.totalReplays = 0;
   state.answerTimes = [];
   state.sessionSeenItems = new Set();
@@ -1147,17 +1362,47 @@ function aggregatePlayers() {
   return Object.entries(db.players).map(([key, p]) => ({ key, ...p }));
 }
 
+function populateAccuracyLeaderboardFilters() {
+  const categorySelect = $("accuracyCategorySelect");
+  const speedSelect = $("accuracySpeedSelect");
+  if (!categorySelect || !speedSelect) return;
+
+  const categories = ["easy", "hard", "technical", "english", "names", "nonsense", "sentences"];
+  categorySelect.innerHTML = categories.map((key) => `<option value="${key}">${escapeHtml(CATEGORY_INFO[key].label)}</option>`).join("");
+  speedSelect.innerHTML = SPEED_LEVELS.map((s) => `<option value="${s.ms}">Level ${s.level} · ${s.ms} ms</option>`).join("");
+
+  if (!categorySelect.value) categorySelect.value = "easy";
+  const preferredSpeed = state.speedMode === "fixed" ? currentSpeed() : 1000;
+  speedSelect.value = String(SPEED_LEVELS.some((s) => s.ms === preferredSpeed) ? preferredSpeed : 1000);
+}
+
+function accuracyLeaderboardOptions() {
+  return {
+    category: $("accuracyCategorySelect")?.value || "easy",
+    speedMs: Number($("accuracySpeedSelect")?.value || 1000),
+    minAttempts: 20,
+    limit: 15
+  };
+}
+
 async function renderLeaderboard(board = "total") {
   const host = $("leaderboardList");
+  const filters = $("accuracyLeaderboardFilters");
+  filters?.classList.toggle("hidden", board !== "accuracy");
+  const accuracyOptions = accuracyLeaderboardOptions();
+
   if (cloudConfigured()) {
     host.innerHTML = '<div class="empty-state">Bestenliste wird geladen …</div>';
     try {
-      const rows = await window.DaktiloCloud.fetchLeaderboard(board);
+      const rows = await window.DaktiloCloud.fetchLeaderboard(board, accuracyOptions);
       if (!rows?.length) {
-        host.innerHTML = `<div class="empty-state">Noch keine passenden Online-Ergebnisse. ${board === "total" || board === "week" || board === "best" ? "Spiele eine passende Challenge." : "Starte ein Training."}</div>`;
+        const message = board === "accuracy"
+          ? "Noch keine Platzierung für diese Kombination. Für die Trefferquote sind mindestens 20 Challenge-Wörter nötig."
+          : `Noch keine passenden Online-Ergebnisse. ${board === "total" || board === "week" || board === "best" ? "Spiele eine passende Challenge." : "Starte ein Training."}`;
+        host.innerHTML = `<div class="empty-state">${message}</div>`;
         return;
       }
-      host.innerHTML = rows.map((r, i) => `<div class="leader-row"><div class="leader-rank">#${i + 1}</div><div><strong>${escapeHtml(r.name)}</strong><div class="leader-meta">${escapeHtml(r.meta)}</div></div><div class="leader-score">${Number(r.value).toLocaleString("de-DE")}${r.suffix || ""}</div></div>`).join("");
+      host.innerHTML = rows.map((r, i) => `<div class="leader-row"><div class="leader-rank">#${i + 1}</div><div><strong>${escapeHtml(r.name)}</strong><div class="leader-meta">${escapeHtml(r.meta)}</div></div><div class="leader-score">${Number(r.value).toLocaleString("de-DE", { maximumFractionDigits: board === "accuracy" ? 1 : 0 })}${r.suffix || ""}</div></div>`).join("");
       return;
     } catch (err) {
       console.warn("Online-Bestenliste:", err);
@@ -1171,17 +1416,46 @@ async function renderLeaderboard(board = "total") {
   const weekly = {};
   db.events.filter((e) => e.mode === "challenge" && e.week === currentWeek).forEach((e) => { weekly[e.playerKey] = (weekly[e.playerKey] || 0) + e.points; });
   let rows = [];
+
+  if (board === "accuracy") {
+    const { category, speedMs, minAttempts, limit } = accuracyOptions;
+    const map = new Map();
+    db.events
+      .filter((e) => e.mode === "challenge" && e.challengeType === "points" && (e.itemCategory || e.category) === category && Number(e.speedMs) === speedMs)
+      .forEach((e) => {
+        const key = e.playerKey || playerKey(e.player || "");
+        const row = map.get(key) || { name: e.player || db.players[key]?.name || "—", total: 0, correct: 0 };
+        row.total += 1;
+        const firstTryCorrect = e.firstTryCorrect == null ? Boolean(e.correct && Number(e.replays || 0) === 0 && !e.skipped) : Boolean(e.firstTryCorrect);
+        row.correct += firstTryCorrect ? 1 : 0;
+        map.set(key, row);
+      });
+    rows = [...map.values()]
+      .filter((r) => r.total >= minAttempts)
+      .map((r) => ({ name: r.name, value: Math.round((r.correct / r.total) * 1000) / 10, meta: `${r.correct}/${r.total} Ersttreffer · mindestens ${minAttempts} Wörter`, suffix: " %", total: r.total }))
+      .sort((a, b) => b.value - a.value || b.total - a.total || a.name.localeCompare(b.name, "de"))
+      .slice(0, limit);
+  }
+
   if (board === "total") rows = players.map((p) => ({ name: p.name, value: p.challengePoints || 0, meta: `${p.totalWords || 0} Wörter · ${accuracy(p.totalCorrect || 0, p.totalWords || 0)} % korrekt` }));
   if (board === "training") rows = players.map((p) => ({ name: p.name, value: p.trainingWords || 0, meta: `${Math.round((p.trainingMs || 0) / 60000)} min gespeichert · ${p.totalReplays || 0} Replays`, suffix: " Wörter" }));
   if (board === "week") rows = players.map((p) => ({ name: p.name, value: weekly[p.key] || 0, meta: `Woche ab ${new Date(startOfWeek()).toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" })}` }));
   if (board === "best") rows = players.map((p) => ({ name: p.name, value: p.bestChallengeWord || 0, meta: `Längste Serie: ${p.bestStreak || 0}` }));
   if (board === "threshold") rows = players.map((p) => ({ name: p.name, value: p.bestThresholdMs || 0, meta: `${(p.thresholdTests || []).length} abgeschlossene Tests`, suffix: " ms", lowerIsBetter: true }));
-  rows = rows.filter((r) => r.value > 0).sort((a, b) => board === "threshold" ? a.value - b.value : b.value - a.value).slice(0, 20);
+
+  if (board !== "accuracy") {
+    rows = rows.filter((r) => r.value > 0).sort((a, b) => board === "threshold" ? a.value - b.value : b.value - a.value).slice(0, 20);
+  }
+
   if (!rows.length) {
-    host.innerHTML = `<div class="empty-state">Noch keine passenden Ergebnisse. ${board === "total" || board === "week" || board === "best" ? "Spiele eine passende Challenge." : "Starte ein Training."}</div>`;
+    const message = board === "accuracy"
+      ? "Noch keine Platzierung für diese Kombination. Für die Trefferquote sind mindestens 20 Challenge-Wörter nötig."
+      : `Noch keine passenden Ergebnisse. ${board === "total" || board === "week" || board === "best" ? "Spiele eine passende Challenge." : "Starte ein Training."}`;
+    host.innerHTML = `<div class="empty-state">${message}</div>`;
     return;
   }
-  host.innerHTML = rows.map((r, i) => `<div class="leader-row"><div class="leader-rank">#${i + 1}</div><div><strong>${escapeHtml(r.name)}</strong><div class="leader-meta">${escapeHtml(r.meta)}</div></div><div class="leader-score">${Number(r.value).toLocaleString("de-DE")}${r.suffix || ""}</div></div>`).join("");
+
+  host.innerHTML = rows.map((r, i) => `<div class="leader-row"><div class="leader-rank">#${i + 1}</div><div><strong>${escapeHtml(r.name)}</strong><div class="leader-meta">${escapeHtml(r.meta)}</div></div><div class="leader-score">${Number(r.value).toLocaleString("de-DE", { maximumFractionDigits: board === "accuracy" ? 1 : 0 })}${r.suffix || ""}</div></div>`).join("");
 }
 
 function openLeaderboard(board = "total") {
@@ -1204,7 +1478,7 @@ function hardestWordRows(playerKeyValue) {
     const key = normalizeAnswer(e.item);
     if (!key) return;
     const row = map.get(key) || { item: e.item, seen: 0, errors: 0, replays: 0, elapsed: 0, signs: Math.max(1, tokenizeSigns(e.item).length) };
-    row.seen += 1; row.errors += e.correct ? 0 : 1; row.replays += e.replays || 0; row.elapsed += Number(e.elapsed) || 0;
+    row.seen += 1; row.errors += (e.correct && !e.hadMistake) ? 0 : 1; row.replays += e.replays || 0; row.elapsed += Number(e.elapsed) || 0;
     map.set(key, row);
   });
   const all = [...map.values()];
@@ -1368,6 +1642,7 @@ function resetToSetup() {
 initZoomControl();
 populateNonsenseLengths();
 populateSpeeds();
+populateAccuracyLeaderboardFilters();
 populateSubcategories();
 updateSetupConstraints();
 updateNonsenseLengthVisibility();
@@ -1435,6 +1710,7 @@ $("categorySelect").addEventListener("change", () => {
 $("speedSelect").addEventListener("change", updateSetupConstraints);
 answerForm.addEventListener("submit", handleAnswer);
 replayButton.addEventListener("click", () => playSequence({ replay: true }));
+solutionButton?.addEventListener("click", revealTrainingSolution);
 $("skipButton").addEventListener("click", skipCurrent);
 $("stopButton").addEventListener("click", finishSession);
 $("playAgain").addEventListener("click", resetToSetup);
@@ -1460,6 +1736,8 @@ $("leaderboardTabs").addEventListener("click", (event) => {
   document.querySelectorAll("#leaderboardTabs button").forEach((b) => b.classList.toggle("active", b === button));
   renderLeaderboard(button.dataset.board);
 });
+$("accuracyCategorySelect")?.addEventListener("change", () => renderLeaderboard("accuracy"));
+$("accuracySpeedSelect")?.addEventListener("change", () => renderLeaderboard("accuracy"));
 $("statsPlayerSelect").addEventListener("change", (event) => renderStats(event.target.value));
 $("resetScores")?.addEventListener("click", resetCurrentScores);
 $("clearData").addEventListener("click", () => {
